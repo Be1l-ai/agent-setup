@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json.schemastore.org/mcp-servers.json",
+  "description": "Neutral MCP server definitions for Agent Kit. All versions pinned. No keys stored - reference env vars by name.",
+  "servers": {
+    "context7": {
+      "description": "Up-to-date code documentation and examples from official sources",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp@4.1.1"
+      ],
+      "env": {
+        "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
+      },
+      "enabled": false,
+      "access": "read-only documentation lookup",
+      "needsKey": true,
+      "keyEnvVar": "CONTEXT7_API_KEY",
+      "keyUrl": "https://context7.com/dashboard",
+      "notes": "API key optional for public docs; required for higher rate limits and private repos. Official Upstash repo: https://github.com/upstash/context7"
+    },
+    "playwright": {
+      "description": "Browser automation via Playwright - structured accessibility snapshots",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.83"
+      ],
+      "enabled": false,
+      "access": "full browser control (navigate, click, type, snapshot, evaluate, network)",
+      "needsKey": false,
+      "notes": "Only for repos with a frontend. Browser downloads on first use. Headed by default. Official Microsoft repo: https://github.com/microsoft/playwright-mcp"
+    },
+    "github": {
+      "description": "GitHub API access - read repos, manage issues/PRs, code search",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@github/github-mcp-server@1.12.0"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "enabled": false,
+      "access": "read-only by default (configure tools in server)",
+      "needsKey": true,
+      "keyEnvVar": "GITHUB_TOKEN",
+      "keyUrl": "https://github.com/settings/tokens",
+      "notes": "Official GitHub repo: https://github.com/github/github-mcp-server. Use classic PAT or fine-grained token. Read-only recommended."
+    }
+  },
+  "globalEnv": {
+    "CONTEXT7_API_KEY": "",
+    "GITHUB_TOKEN": ""
+  }
+}
