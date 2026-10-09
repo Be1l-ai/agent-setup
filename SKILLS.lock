@@ -1,0 +1,82 @@
+# SKILLS.lock
+
+This file records the provenance of every vendored skill. Do not edit manually.
+
+## systematic-debugging
+- **source_repo**: https://github.com/obra/superpowers
+- **source_owner**: obra (Jesse Vincent)
+- **source_path**: skills/systematic-debugging/
+- **commit_hash**: 8ca22dba9a94f28898bbce59f2537ff4d87c747d
+- **license**: MIT
+- **copy_date**: 2026-10-09
+- **excluded_files**: none (entire folder copied)
+- **tool_name_mappings**:
+  - "superpowers:test-driven-development" → "test-driven-development"
+  - "superpowers:verification-before-completion" → "verification-before-completion (NOT VENDORED)"
+  - "bash" → "shell tool"
+  - "grep" → "search tool"
+  - "env" → "environment inspection tool"
+- **notes**: References excluded skill `verification-before-completion` in Phase 4.4
+
+## test-driven-development
+- **source_repo**: https://github.com/obra/superpowers
+- **source_owner**: obra (Jesse Vincent)
+- **source_path**: skills/test-driven-development/
+- **commit_hash**: 8ca22dba9a94f28898bbce59f2537ff4d87c747d
+- **license**: MIT
+- **copy_date**: 2026-10-09
+- **excluded_files**: none (entire folder copied)
+- **tool_name_mappings**:
+  - "npm test" → "project's test command"
+  - "pytest" → "project's test command"
+  - "cargo test" → "project's test command"
+  - "go test ./..." → "project's test command"
+
+## receiving-code-review
+- **source_repo**: https://github.com/obra/superpowers
+- **source_owner**: obra (Jesse Vincent)
+- **source_path**: skills/receiving-code-review/
+- **commit_hash**: 8ca22dba9a94f28898bbce59f2537ff4d87c747d
+- **license**: MIT
+- **copy_date**: 2026-10-09
+- **excluded_files**: none (entire folder copied)
+- **tool_name_mappings**:
+  - "gh api" → "GitHub API tool (if available) or manual PR comment"
+  - "grep codebase" → "search tool"
+
+## finishing-a-development-branch
+- **source_repo**: https://github.com/obra/superpowers
+- **source_owner**: obra (Jesse Vincent)
+- **source_path**: skills/finishing-a-development-branch/
+- **commit_hash**: 8ca22dba9a94f28898bbce59f2537ff4d87c747d
+- **license**: MIT
+- **copy_date**: 2026-10-09
+- **excluded_files**: none (entire folder copied)
+- **tool_name_mappings**:
+  - "git" → "git CLI (standard)"
+  - "git worktree" → "git worktree (standard)"
+
+## claude-code-security-review
+- **source_repo**: https://github.com/anthropics/claude-code-security-review
+- **source_owner**: anthropics (Anthropic)
+- **source_path**: claudecode/prompts.py (get_security_audit_prompt function only)
+- **commit_hash**: 0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+- **license**: MIT
+- **copy_date**: 2026-10-09
+- **excluded_files**: action.yml, claudecode/*.py (except prompts.py), scripts/, tests/, docs/, examples/, .github/, .claude/, pytest.ini, __init__.py
+- **tool_name_mappings**:
+  - "repository exploration tools" → "file search/glob tool"
+  - "file search tools" → "grep/search tool"
+  - "repository exploration tools" → "read/list tools"
+- **notes**: Only the prompt template vendored, not the GitHub Action infrastructure. UNVERIFIED for harnesses without file exploration capabilities.
+
+## frontend-design
+- **source_repo**: https://github.com/anthropics/skills
+- **source_owner**: anthropics (Anthropic)
+- **source_path**: skills/frontend-design/
+- **commit_hash**: 9d630808e4add0a7146de4af9384155d5dee350a
+- **license**: Apache-2.0
+- **copy_date**: 2026-10-09
+- **excluded_files**: none (entire folder copied)
+- **tool_name_mappings**: none
+- **notes**: Only for repos with a UI. Apache 2.0 license requires retaining NOTICE if present.
