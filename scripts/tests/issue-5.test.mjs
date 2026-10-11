@@ -199,7 +199,13 @@ async function main() {
       formatters: {},
       permission: v1Permission,
       plugins: ["./.opencode/plugins/agent-kit-guard.mjs"],
-      files: [{ path: "opencode.json", action: "merge" }],
+      files: [
+        { path: "opencode.json", action: "merge" },
+        { path: ".opencode/plugins/agent-kit-guard.mjs", action: "create", source: "plugins/opencode/agent-kit-guard.mjs" },
+        { path: ".opencode/plugins/agent-kit-guard-core.mjs", action: "create", source: "plugins/opencode/agent-kit-guard-core.mjs" },
+        { path: ".opencode/plugins/agent-kit-guard/index.mjs", action: "create", source: "plugins/opencode/agent-kit-guard/index.mjs" },
+        { path: ".opencode/plugins/agent-kit-guard/agent-kit-guard-core.mjs", action: "create", source: "plugins/opencode/agent-kit-guard/agent-kit-guard-core.mjs" },
+      ],
       notes: [],
     };
     const proposalPath = path.join(tmp, "proposal.json");
@@ -273,6 +279,15 @@ async function main() {
       Array.isArray(emitted.skills) && emitted.skills.includes("./.agent-kit/skills"),
       JSON.stringify(emitted.skills),
     );
+
+    // Verify V2 layout files exist on disk after apply
+    check("V2 plugin dir index exists", fs.existsSync(path.join(target, '.opencode', 'plugins', 'agent-kit-guard', 'index.mjs')));
+    check("V2 plugin dir core exists", fs.existsSync(path.join(target, '.opencode', 'plugins', 'agent-kit-guard', 'agent-kit-guard-core.mjs')));
+    check("V2 plugin dir is a real directory", fs.statSync(path.join(target, '.opencode', 'plugins', 'agent-kit-guard')).isDirectory());
+    check("V2 plugins entry points to directory that exists", (() => {
+      const dir = path.join(target, '.opencode', 'plugins', 'agent-kit-guard');
+      try { return fs.existsSync(dir) && fs.statSync(dir).isDirectory(); } catch { return false; }
+    })());
 
     // V1 keys are retained so V1 (and the shared self-test) keep working.
     check(
