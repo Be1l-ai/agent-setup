@@ -66,8 +66,12 @@ files.push({ path: 'AGENTS.md', action: 'merge' });
 if (harness === 'opencode') {
   // Native OpenCode plugin: guard only. Done-gate/format/session-start are standalone scripts.
   if (hooks.includes('guard')) {
+    // V1 single-file layout (backward compatible)
     files.push({ path: '.opencode/plugins/agent-kit-guard.mjs', action: 'create', source: 'plugins/opencode/agent-kit-guard.mjs' });
     files.push({ path: '.opencode/plugins/agent-kit-guard-core.mjs', action: 'create', source: 'plugins/opencode/agent-kit-guard-core.mjs' });
+    // V2 directory layout (ensures the plugin actually loads)
+    files.push({ path: '.opencode/plugins/agent-kit-guard/index.mjs', action: 'create', source: 'plugins/opencode/agent-kit-guard/index.mjs' });
+    files.push({ path: '.opencode/plugins/agent-kit-guard/agent-kit-guard-core.mjs', action: 'create', source: 'plugins/opencode/agent-kit-guard/agent-kit-guard-core.mjs' });
   }
   files.push({ path: 'opencode.json', action: 'merge' }); // permission + plugin registration
 }

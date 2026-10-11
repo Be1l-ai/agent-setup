@@ -2,9 +2,10 @@
 
 A reusable, harness-agnostic toolkit for adding agent assistance to any codebase.
 
-> **Status:** OpenCode integration is implemented and verified against `opencode` 1.18.35.
-> Other harnesses are documented in `harnesses/` but not installed by the kit. See
-> [Status and limits](#status-and-limits).
+> **Status:** OpenCode integration supports **OpenCode 2.x** (natively) and
+> **OpenCode 1.18.29+** (backward-compatible). To tell which version you have,
+> run `opencode --version`. Other harnesses are documented in `harnesses/` but
+> not installed by the kit. See [Status and limits](#status-and-limits).
 
 ## What This Is
 
@@ -104,10 +105,11 @@ Profiles: `debugging`, `code-review`, `branch`, `security-review`, `frontend` (U
 
 For OpenCode, two layers:
 
-- `permission` in `opencode.json` — hard denies (`rm -rf *`, `git push * --force*`, `read .env`) enforced by the harness before a tool runs.
-- `.opencode/plugins/agent-kit-guard.mjs` — checks the harness cannot express (flag parsing, `sh -c`, `sudo`, `$(...)`, `+refspec`, kit-protected paths). Throwing in `tool.execute.before` blocks the call.
+- **V2 (preferred):** ordered `permissions` array in `opencode.json` — hard denies (`rm -rf *`, `git push * --force*`, `*.env` reads) enforced by the harness before a tool runs. Action names use `shell` (not `bash`) and rules follow "last match wins".
+- **V1 (compatibility):** `permission` nested object in `opencode.json` (emitted alongside `permissions` so V1 continues to work).
+- `.opencode/plugins/agent-kit-guard.mjs` (plugin) — checks what the rule layer cannot express (flag parsing, `sh -c`, `sudo`, `$(...)`, `+refspec`, kit-protected paths). Throwing in `tool.execute.before` blocks the call. On V2, the kit also writes a `plugins` entry pointing at the plugin directory.
 
-Both were verified against `opencode` 1.18.35. The plugin **must stay registered** in the `plugin` array of `opencode.json`; directory auto-discovery did not load it in testing. See `harnesses/opencode.md`.
+The guard works with OpenCode 2.x (primary) and 1.18.29+ (backward compatible). See `harnesses/opencode.md` for details, including the V2 plugin packaging caveat.
 
 The guard is a guardrail against accidents, not a sandbox. It parses shell text heuristically and cannot see everything a shell can do.
 
