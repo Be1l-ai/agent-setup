@@ -61,6 +61,12 @@ function makeFixture(dir) {
   write(path.join(dir, '.opencode/config.json'), '{}\n');
   // Must be pruned from the language scan.
   write(path.join(dir, 'node_modules/dummy.js'), '// must be pruned\n');
+  // Dependency paths must never surface as agent files. The anchored
+  // `-path "./.claude/**"` cannot reach "./node_modules/..." even if pruning
+  // regressed, so this guards against the pattern being loosened (e.g. an
+  // unanchored or basename fallback) rather than against the prune itself.
+  // The prune itself is covered by the language-scan assertion below.
+  write(path.join(dir, 'node_modules/.claude/x.md'), '# must not be detected\n');
 }
 
 function main() {
@@ -94,6 +100,9 @@ function main() {
   console.log('--- pruning still works');
   check('node_modules is pruned from language scan', !report.languages.includes('javascript'),
     `languages = ${JSON.stringify(report.languages)}`);
+  const leaked = report.existingAgentFiles.filter(f => f.includes('node_modules'));
+  check('node_modules is pruned from agent-file detection', leaked.length === 0,
+    `leaked = ${JSON.stringify(leaked)}`);
 
   fs.rmSync(tmp, { recursive: true, force: true });
 
