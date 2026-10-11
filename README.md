@@ -2,6 +2,10 @@
 
 A reusable, harness-agnostic toolkit for adding agent assistance to any codebase.
 
+> **Status:** OpenCode integration is implemented and verified against `opencode` 1.18.35.
+> Other harnesses are documented in `harnesses/` but not installed by the kit. See
+> [Status and limits](#status-and-limits).
+
 ## What This Is
 
 This kit provides:
@@ -33,7 +37,7 @@ This kit provides:
 
 ```bash
 # 1. Clone this kit OUTSIDE your target repo
-git clone <this-kit-repo> ~/agent-kit
+git clone https://github.com/Be1l-ai/agent-setup.git ~/agent-kit
 cd ~/agent-kit
 
 # 2. Review and adjust kit.config.json for your harness/OS
@@ -58,21 +62,26 @@ See [REMOVE.md](REMOVE.md) for details.
 ## Directory Structure
 
 ```
-agent-kit/
+.
 ├── README.md              # This file
+├── CONTRIBUTING.md        # How to propose changes
+├── LICENSE                # MIT
 ├── APPLY.md               # Step-by-step apply procedure
 ├── REMOVE.md              # Uninstall via manifest
+├── BUILD_REPORT.md        # Build history and current status
 ├── kit.config.json        # Harness, OS, profiles, toggles (missing key = off)
 ├── AGENTS.template.md     # Canonical prompt template with marker blocks
 ├── skills/                # Vendored, reviewed skill folders
 ├── SKILLS.lock            # Source, owner, commit hash, license, copy date per skill
 ├── mcp/servers.json       # Neutral MCP definitions with pinned versions
-├── hooks/                 # Hook scripts + README.md
-├── plugins/               # Opt-in plugin recipes (not installed)
-├── harnesses/             # Verified harness file locations/formats
+├── hooks/                 # Standalone scripts (done-gate, format, session-start) + README
+├── plugins/opencode/      # OpenCode guard plugin + shared rule core
+├── plugins/               # Opt-in third-party plugin recipes (not installed)
+├── harnesses/             # Per-harness integration notes (OpenCode verified)
 ├── scripts/               # recon, propose, apply, remove, lib (Node.js 18+, zero deps)
 └── REVIEW/                # One report per third-party source reviewed
 ```
+
 
 ## Configuration
 
@@ -102,10 +111,26 @@ Both were verified against `opencode` 1.18.35. The plugin **must stay registered
 
 The guard is a guardrail against accidents, not a sandbox. It parses shell text heuristically and cannot see everything a shell can do.
 
+## Status and limits
+
+- **Verified:** the OpenCode guard blocks `rm -rf .` in a live `opencode run` while a
+  safe `rm file` still runs. Apply → remove round-trips a repo byte for byte.
+- **Not installed:** Codex, kilo, Cline, Cursor, Gemini. See `harnesses/`.
+- **No harness can block an agent from finishing a turn.** Codex's `Stop` continues the
+  loop; OpenCode's `session.idle` fires after the turn. `done-gate` is therefore a
+  standalone CI script, not a lifecycle hook.
+- **The guard is not a sandbox.** It parses shell text heuristically and cannot see
+  everything a shell can do. Rules you cannot afford to lose belong in the `permission`
+  block of `opencode.json`, which the harness enforces.
+
 ## Skills Included
 
 See [skills/INDEX.md](skills/INDEX.md) for the full list and when to use each.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
-This kit is MIT licensed. Vendored skills retain their original licenses (see SKILLS.lock).
+This kit is MIT licensed (see [LICENSE](LICENSE)). Vendored skills retain their original licenses (see [SKILLS.lock](SKILLS.lock)).

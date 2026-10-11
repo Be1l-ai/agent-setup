@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax check all scripts
+        run: |
+          for f in scripts/*.js hooks/*.js; do node --check "$f"; done
+
+      - name: Guard rules
+        run: node scripts/guard-test.js
+
+      - name: Apply and remove round trip
+        run: node scripts/self-test.js
+
+      - name: done-gate fails closed with no verify command
+        run: |
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/.agent-kit"
+          set +e
+          node hooks/done-gate.js
+          code=$?
+          set -e
+          rm -rf "$tmp"
+          # A missing verify command must block, not silently pass.
+          if [ "$code" -eq 0 ]; then
+            echo "done-gate passed with no verify command configured"
+            exit 1
+          fi
+          echo "done-gate exits $code with no verify command (expected non-zero)"
+
+      - name: done-gate passes a good command and fails a bad one
+        run: |
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/.agent-kit"
+          cd "$tmp"
+          echo '{"verifyCommand":"true"}' > .agent-kit/verify-config.json
+          node "$GITHUB_WORKSPACE/hooks/done-gate.js"
+          echo '{"verifyCommand":"false"}' > .agent-kit/verify-config.json
+          set +e
+          node "$GITHUB_WORKSPACE/hooks/done-gate.js"
+          code=$?
+          set -e
+          rm -rf "$tmp"
+          if [ "$code" -eq 0 ]; then
+            echo "done-gate passed a failing command"
+            exit 1
+          fi
+          echo "done-gate exits $code on failure (expected non-zero)"

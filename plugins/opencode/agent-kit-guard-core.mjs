@@ -163,8 +163,13 @@ function checkRm(root, args) {
     if (t.startsWith("~") || t.includes("$") || path.isAbsolute(t) || outsideRoot(root, t)) {
       return `rm outside repo blocked: ${t}`;
     }
+    // Block wiping the repo root itself. A nested path like node_modules/.bin is fine.
     const { rel } = relToRoot(root, t);
-    if (rel === "" || rel === "." || rel === "*" || rel.endsWith("/*") || t === "*" || t === ".") {
+    if (rel === "" || rel === "." || rel === "*" || t === "*" || t === "." || t === "./" || t === "/*") {
+      return `rm of whole repo blocked: ${t}`;
+    }
+    // Bare "./*" style targets still mean the whole tree.
+    if (/^\.\/?\*$/.test(t) || /^\*\/?$/.test(t)) {
       return `rm of whole repo blocked: ${t}`;
     }
     if (protectedRel(root, t) || rel.startsWith(".agent-kit")) return `rm of protected kit path blocked: ${t}`;
