@@ -196,10 +196,48 @@ for (const p of plan) {
 }
 if (proposal.permission || (proposal.plugins && proposal.plugins.length)) log('  merge   opencode.json (V2 permissions/plugins/skills + V1 permission/plugin)');
 
-if (dryRun) {
-  log('DRY RUN: no changes made.');
-  process.exit(0);
-}
+  // Verification helper
+  function runVerify(label, timeoutMs = 60000) {
+    const verifyCmd = proposal.verifyCommand;
+    if (!verifyCmd) {
+      return { executed: false, label, exitCode: null, output: '' };
+    }
+    log(`${label}...`);
+    try {
+      const output = execFileSync('sh', ['-c', verifyCmd], {
+        cwd: target,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: timeoutMs,
+      });
+      const result = { executed: true, label, exitCode: 0, output: output || '' };
+      log(`${label} passed (exit 0)`);
+      return result;
+    } catch (e) {
+      const result = {
+        executed: true,
+        label,
+        exitCode: e.code !== undefined ? e.code : 1,
+        output: (e.stdout || '') + (e.stderr || '') || e.message || '',
+      };
+      log(`${label} failed (exit ${result.exitCode})`);
+      return result;
+    }
+  }
+
+  let verifyBefore = null;
+  let verifyAfter = null;
+
+  if (dryRun) {
+    log('DRY RUN: no changes made.');
+    if (proposal.verifyCommand) {
+      log('DRY RUN: verify command would run before and after (not executed)');
+    }
+    process.exit(0);
+  }
+
+  // Run verify before any writes
+  verifyBefore = runVerify('Verify before apply');
 
 // ---------- apply ----------
 
@@ -369,7 +407,25 @@ try {
     }
   }
 
-  log('Applied.');
+  // Run verify after writes
+  verifyAfter = runVerify('Verify after apply');
+
+  // Check for regression: after failed while before passed
+  if (verifyBefore && verifyBefore.executed && verifyBefore.exitCode === 0 &&
+      verifyAfter && verifyAfter.executed && verifyAfter.exitCode !== 0) {
+    rollback(`Verify failed after apply (before: exit 0, after: exit ${verifyAfter.exitCode}). Regression detected.`);
+    return;
+  }
+
+  // Check verify outcomes
+  const verifyExecuted = verifyBefore && verifyBefore.executed;
+  const verifyOk = verifyExecuted && verifyBefore.exitCode === 0 && verifyAfter && verifyAfter.exitCode === 0;
+
+  if (verifyExecuted && !verifyOk) {
+    log('WARNING: Verify did not pass after apply (see results below).');
+  } else {
+    log('Applied.');
+  }
   log(`Undo with: node ${path.join(lib.KIT_ROOT, 'scripts', 'remove.js')} --target ${target}`);
   if (proposal.hooks.includes('done-gate') && !proposal.verifyCommand) {
     log('WARNING: done-gate needs a verify command. Set one in .agent-kit/verify-config.json.');
@@ -379,6 +435,17 @@ try {
     if (proposal.plugins && proposal.plugins.length) {
       log('OpenCode: V2 loads the guard from a plugin directory (.opencode/plugins/agent-kit-guard/index.mjs). If that directory is missing, OpenCode 2.x logs "failed to load plugin"; see harnesses/opencode.md.');
     }
+  }
+  // Print verify results in final report
+  if (verifyBefore && verifyBefore.executed) {
+    log(`Verify before: exit ${verifyBefore.exitCode}`);
+  }
+  if (verifyAfter && verifyAfter.executed) {
+    log(`Verify after: exit ${verifyAfter.exitCode}`);
+  }
+  // If verify was configured but didn't pass, exit non-zero (config error/misconfiguration, not regression)
+  if (verifyExecuted && !verifyOk) {
+    process.exit(1);
   }
 } catch (e) {
   rollback(e.message);
