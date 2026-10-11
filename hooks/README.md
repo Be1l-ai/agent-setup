@@ -1,29 +1,43 @@
 # Hooks
 
-This directory contains hook scripts for agent harnesses. Each hook is a small, readable Node.js script (~60 lines) that performs one specific safety or quality function.
+The guard is **not** a standalone script. It ships as an OpenCode plugin under
+`plugins/opencode/`; see `harnesses/opencode.md`. The scripts here are standalone
+and are not auto-registered with any harness.
 
-## Hooks
+## Scripts
 
-| Hook | Event | Description |
-|------|-------|-------------|
-| `guard.js` | pre-tool-use | Blocks reading secrets, rm -rf outside repo, git push --force, deploy commands without approval |
-| `format-on-edit.js` | post-tool-use (write/edit) | Runs repo's formatter on edited file only, timeout 10s, never fails edit |
-| `done-gate.js` | pre-completion | Runs repo's test+lint, blocks "done" on failure, max 2 retries then reports |
-| `session-start.js` | session-start | Prints git status, branch, recent commits, repo summary (off by default) |
+| Script | Purpose |
+|--------|---------|
+| `done-gate.js` | Runs the repo's verify command. Exit 1 on failure, and exit 1 if no command is set. Wire to CI or pre-commit |
+| `format-on-edit.js` | Runs the repo's formatter on one file (10s timeout, never fails the edit) |
+| `session-start.js` | Prints git status, branch, recent commits, and kit config |
+
+All three read a JSON event on stdin (`{"tool": ..., "input": {...}}`) and exit 0,
+except `done-gate`, which exits 1 to block.
+
+Guard logic lives in `plugins/opencode/agent-kit-guard-core.mjs` and is reachable
+from Node for testing:
+
+```js
+import { checkToolCall } from "./.opencode/plugins/agent-kit-guard-core.mjs";
+checkToolCall(root, "bash", { command: "rm -rf /" });  // -> reason string, or null
+```
 
 ## Harness Support
 
-| Harness | pre-tool-use | post-tool-use | pre-completion | session-start |
-|---------|--------------|---------------|----------------|---------------|
-| Codex | ✅ | ✅ | ❌ | ❌ |
-| OpenCode | ✅ | ✅ | ✅ | ✅ |
-| kilo | ✅ | ✅ | ✅ | ✅ |
-| cline | ❌ | ❌ | ❌ | ❌ |
-| Cursor | ❌ | ❌ | ❌ | ❌ |
-| Gemini CLI | ❌ | ❌ | ❌ | ❌ |
-| Generic (git/CI) | via pre-commit | via pre-commit | via CI | N/A |
+Only OpenCode is verified and installed. Codex can block `PreToolUse` but cannot
+block the end of a turn, so done-gate is CI there too.
 
-**Legend**: ✅ = Native hook support, ❌ = Not supported, use fallback
+| Harness | tool-call blocking | end-of-turn blocking | Installed by kit |
+|---------|--------------------|----------------------|------------------|
+| OpenCode | ✅ plugin + permission | ❌ (use CI) | ✅ verified 1.18.35 |
+| Codex | ✅ `PreToolUse` exit 2 | ❌ (`Stop` continues) | no — adapter only |
+| kilo | UNVERIFIED | UNVERIFIED | no |
+| cline | UNVERIFIED | UNVERIFIED | no |
+| Cursor / Gemini | ❌ | ❌ | no |
+| Generic | via pre-commit | via CI | no |
+
+**Legend**: ✅ verified, ❌ not supported, UNVERIFIED = not confirmed against the harness
 
 ## Fallbacks (Portable)
 
@@ -73,31 +87,28 @@ jobs:
 
 Hooks read configuration from `.agent-kit/` at apply time:
 
-- `format-config.json` - formatter commands per extension (from recon)
-- `verify-config.json` - verify command (from recon)
-- `approvals.json` - approved deploy/publish commands (user-managed)
-- `config.json` - merged kit.config.yaml + detected settings
+- `format-config.json` - formatter commands per extension
+- `verify-config.json` - verify command (done-gate)
+- `config.json` - enabled harness, skills, hooks, MCP servers
+- `manifest.json` - apply record used by remove.js (do not edit)
+- `backup/` - original contents of every file apply changed
 
 ## Installation
 
-Hooks are installed by the apply script based on `kit.config.yaml` and detected harness. They are placed in the harness's hook directory:
+The guard is installed by apply into `.opencode/plugins/` and registered in the
+`plugin` array of `opencode.json`. See `harnesses/opencode.md`.
 
-- **Codex**: `.codex/hooks/`
-- **OpenCode**: `.opencode/hooks/`
-- **kilo**: `.kilocode/hooks/`
-- **Claude Code**: `.claude/hooks/`
+## Writing custom scripts
 
-## Writing Custom Hooks
+Standalone scripts read a JSON event on stdin: `{"tool": "bash"|"read"|"write"|"edit", "input": {...}}`.
 
-Hooks receive arguments via command line:
-```
-hook-name <tool-name> <json-args>
-```
+Exit codes: `0` allow/continue, `1` block/reject.
 
-Exit codes:
-- `0` = allow/continue
-- `1` = block/reject
+Environment: `GIT_ROOT` - repository root (defaults to the git top level, or cwd).
 
-Environment variables:
-- `GIT_ROOT` - repository root
-- `AGENT_KIT_ROOT` - kit installation root
+## Guard configuration
+
+Rules live in `plugins/opencode/agent-kit-guard-core.mjs`: `SECRET_BASENAME`,
+`SECRET_PATH_FRAGMENTS`, `PROTECTED_REL`, and the `DEPLOY` table. Edit those lists to
+match your repo. Rules you cannot afford to lose belong in the `permission` block of
+`opencode.json`, which the harness enforces before any tool runs.

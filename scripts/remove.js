@@ -1,123 +1,87 @@
 #!/usr/bin/env node
 /**
- * Remove Script - Uninstalls the kit using the manifest
- * Usage: node remove.js --target <path> [--dry-run]
+ * Remove: reverts an apply using <target>/.agent-kit/manifest.json.
+ *
+ * Usage: node remove.js --target <repo> [--dry-run] [--ignore-hash]
+ *
+ * Only touches paths listed in the manifest. Never deletes whole directories
+ * the kit does not own, and leaves unrecorded user files in .agent-kit/ alone.
+ * Refuses if any kit-written file changed since apply, unless --ignore-hash.
  */
 
 const fs = require('fs');
 const path = require('path');
+const lib = require('./lib');
 
-const args = process.argv.slice(2);
-const dryRun = args.includes('--dry-run');
-const targetIdx = args.indexOf('--target');
-const target = targetIdx >= 0 ? args[targetIdx + 1] : process.cwd();
+const args = lib.parseArgs(process.argv.slice(2), ['dry-run', 'ignore-hash']);
+const dryRun = !!args['dry-run'];
+const ignoreHash = !!args['ignore-hash'];
+const target = path.resolve(args.target || process.cwd());
 
-const MANIFEST_DIR = '.agent-kit';
-const MANIFEST_FILE = 'manifest.json';
+const AGENT_DIR = path.join(target, '.agent-kit');
+const MANIFEST = path.join(AGENT_DIR, 'manifest.json');
 
-function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return null;
+// Remove empty directories under dir, deepest first. Never removes files.
+function pruneEmptyDirs(dir) {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) pruneEmptyDirs(path.join(dir, entry.name));
+  }
+  try { fs.rmdirSync(dir); } catch {}
+}
+
+function die(msg) {
+  console.error(`[remove] ERROR: ${msg}`);
+  process.exit(1);
+}
+
+const manifest = lib.readJson(MANIFEST);
+if (!manifest || manifest.version !== 1 || !Array.isArray(manifest.entries)) {
+  die('no valid .agent-kit/manifest.json in target');
+}
+
+// Every path in the manifest must stay inside the target.
+for (const e of manifest.entries) {
+  const abs = path.resolve(target, e.path);
+  if (abs !== target && !abs.startsWith(target + path.sep)) die(`manifest entry escapes target: ${e.path}`);
+  if (e.backup && (path.isAbsolute(e.backup) || e.backup.split('/').includes('..'))) {
+    die(`manifest backup path is unsafe: ${e.backup}`);
   }
 }
 
-function removeFile(file) {
-  const fullPath = path.join(target, file);
-  if (!fs.existsSync(fullPath)) {
-    console.log(`[remove] Not found (already removed): ${file}`);
-    return;
-  }
-  if (dryRun) {
-    console.log(`[remove] DRY RUN: Would delete ${file}`);
-    return;
-  }
-  fs.unlinkSync(fullPath);
-  console.log(`[remove] Deleted ${file}`);
+// 1. Every file apply finished writing must still match what apply wrote.
+const changed = [];
+for (const e of manifest.entries) {
+  if (!e.afterHash) continue; // write never completed; handled below
+  const current = lib.hashPath(path.join(target, e.path));
+  if (current !== e.afterHash) changed.push(e.path);
+}
+if (changed.length && !ignoreHash) {
+  die(`these files changed since apply and will not be touched:\n  ${changed.join('\n  ')}\nReview them, then re-run with --ignore-hash to force.`);
 }
 
-function restoreFile(file, beforeHash) {
-  const fullPath = path.join(target, file);
-  if (!fs.existsSync(fullPath)) {
-    console.log(`[remove] File missing, cannot restore: ${file}`);
-    return;
+if (dryRun) {
+  for (const e of manifest.entries) {
+    console.log(`[remove] DRY RUN: ${e.existed ? 'restore' : 'delete'} ${e.path}`);
   }
-  if (dryRun) {
-    console.log(`[remove] DRY RUN: Would restore ${file} (before: ${beforeHash})`);
-    return;
-  }
-  // We don't have the original content, so we can only delete
-  // In a real implementation, we'd store backup during apply
-  console.log(`[remove] WARNING: Cannot auto-restore ${file} (no backup stored)`);
-  console.log(`[remove] Manual restore needed from git: git checkout HEAD -- ${file}`);
+  console.log('[remove] DRY RUN: would delete only manifest-listed paths, then the empty kit dirs');
+  process.exit(0);
 }
 
-function removeDir(dir) {
-  const fullPath = path.join(target, dir);
-  if (!fs.existsSync(fullPath)) return;
-  if (dryRun) {
-    console.log(`[remove] DRY RUN: Would remove dir ${dir}`);
-    return;
-  }
-  fs.rmSync(fullPath, { recursive: true, force: true });
-  console.log(`[remove] Removed dir ${dir}`);
+// 3. Restore originals, delete kit-created files, drop empty kit dirs (shared rules in lib).
+lib.restoreEntries(target, manifest);
+
+// 4. Remove the kit's own state: the backups it recorded, then the manifest.
+//    Then prune empty directories under the backup root (deepest first).
+for (const e of manifest.entries) {
+  if (e.backup) fs.rmSync(path.join(target, e.backup), { force: true });
 }
+fs.rmSync(MANIFEST, { force: true });
+pruneEmptyDirs(path.join(target, '.agent-kit', 'backup'));
+try { fs.rmdirSync(path.join(target, '.agent-kit', 'backup')); } catch {}
+try { fs.rmdirSync(AGENT_DIR); } catch {} // only succeeds if the kit left nothing behind
 
-function main() {
-  console.log(`[remove] Target: ${target}`);
-
-  const manifestPath = path.join(target, MANIFEST_DIR, MANIFEST_FILE);
-  const manifest = readJson(manifestPath);
-
-  if (!manifest) {
-    console.error('[remove] No manifest found. Cannot uninstall automatically.');
-    console.error('[remove] Run manual cleanup (see REMOVE.md)');
-    process.exit(1);
-  }
-
-  console.log(`[remove] Kit commit: ${manifest.kitCommit}`);
-  console.log(`[remove] Applied: ${manifest.timestamp}`);
-
-  // Remove created files
-  for (const file of manifest.createdFiles || []) {
-    removeFile(file.path);
-  }
-
-  // Restore modified files
-  for (const file of manifest.modifiedFiles || []) {
-    restoreFile(file.path, file.beforeHash);
-  }
-
-  // Remove .agent-kit directory
-  removeDir(MANIFEST_DIR);
-
-  // Check for other kit-created directories
-  const kitDirs = [
-    '.claude/hooks',
-    '.codex/hooks',
-    '.opencode/hooks',
-    '.kilocode/hooks',
-    '.clinerules/hooks',
-    '.cursor/hooks',
-  ];
-  for (const dir of kitDirs) {
-    const fullDir = path.join(target, dir);
-    if (fs.existsSync(fullDir)) {
-      // Only remove if it only contains kit hooks
-      const files = fs.readdirSync(fullDir);
-      const kitHooks = ['guard.js', 'format-on-edit.js', 'done-gate.js', 'session-start.js'];
-      const onlyKitHooks = files.every(f => kitHooks.includes(f));
-      if (onlyKitHooks) {
-        removeDir(dir);
-      }
-    }
-  }
-
-  console.log('[remove] Done. Run git status to verify.');
-  if (!dryRun) {
-    console.log('[remove] Consider committing the removal: git add -A && git commit -m "Remove agent kit"');
-  }
-}
-
-main();
+console.log(`[remove] Reverted kit (applied ${manifest.timestamp}, kit ${manifest.kitCommit}).`);
+if (changed.length) console.log(`[remove] Forced past changed files: ${changed.join(', ')}`);
+const unfinished = manifest.entries.filter(e => !e.afterHash).length;
+if (unfinished) console.log(`[remove] Left ${unfinished} unfinished entries untouched (never written by apply).`);

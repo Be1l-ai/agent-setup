@@ -2,7 +2,7 @@
 
 ## Summary
 
-Successfully built the Agent Kit repository at `/home/bel/Workspace/agent-set-up/agent-kit/`. The kit has been tested against a sample Node.js project and verified to apply cleanly, pass verification, and remove completely.
+Built the Agent Kit repository at `/home/bel/Workspace/agent-set-up/agent-kit/`. The original test table below was from the pre-fix build. The fix pass (see the status section) changed apply, remove, guard, done-gate, and config; that build was re-tested only against the fixture described in the status section.
 
 ---
 
@@ -12,7 +12,7 @@ Successfully built the Agent Kit repository at `/home/bel/Workspace/agent-set-up
 - `README.md` - Documentation, requirements, trust model, usage
 - `APPLY.md` - Step-by-step apply procedure (8 steps)
 - `REMOVE.md` - Uninstall procedure via manifest
-- `kit.config.yaml` - Configuration (harness, OS, profiles, mcp, plugins, hooks)
+- `kit.config.json` - Configuration (harness, OS, profiles, mcp, plugins, hooks)
 - `AGENTS.template.md` - Canonical prompt template with marker blocks
 
 ### Skills (6 vendored, reviewed)
@@ -30,15 +30,16 @@ Successfully built the Agent Kit repository at `/home/bel/Workspace/agent-set-up
 - `plugins/ponytail.md` - DietrichGebert/ponytail v5.1.0
 
 ### Hooks (4 scripts + README)
-- `hooks/guard.js` - Pre-tool-use: blocks .env reads, rm -rf outside repo, git push --force, deploy without approval
-- `hooks/format-on-edit.js` - Post-tool-use: runs repo's formatter on edited file (10s timeout, never fails)
-- `hooks/done-gate.js` - Pre-completion: runs repo's test+lint, blocks on failure, max 2 retries
-- `hooks/session-start.js` - Session-start: prints git status, branch, recent commits (off by default)
+- `plugins/opencode/agent-kit-guard.mjs` - OpenCode plugin: blocks tool calls via `tool.execute.before` (verified 1.18.35)
+- `plugins/opencode/agent-kit-guard-core.mjs` - Guard rules: secrets, rm, force-push, deploy, kit-protected paths
+- `hooks/done-gate.js` - Standalone: runs the repo's verify command, fails closed, no retry counter
+- `hooks/format-on-edit.js` - Standalone: runs the repo's formatter on one file (argv array, no shell)
+- `hooks/session-start.js` - Standalone: prints git status, branch, commits, kit config
 - `hooks/README.md` - Harness support matrix and fallback docs
 
 ### Harness Adapters (4, verified)
 - `harnesses/codex.md` - hooks.json/config.toml format, events, trust model
-- `harnesses/opencode.md` - hooks.yaml + native PascalCase events
+- `harnesses/opencode.md` - OpenCode plugin + permission block, verified against 1.18.35
 - `harnesses/kilo.md` - TypeScript plugin hooks (no file hooks)
 - `harnesses/cline.md` - .clinerules/hooks/ executable scripts
 
@@ -49,10 +50,6 @@ Successfully built the Agent Kit repository at `/home/bel/Workspace/agent-set-up
 - `scripts/recon.js` - READ-ONLY detection of package manager, commands, CI, monorepo, existing agent files
 - `scripts/propose.js` - Generates proposal from recon + config
 - `scripts/apply.js` - Applies proposal (additive, marker-block merges)
-- `scripts/merge-agents-md.js` - Merges AGENTS.md between markers
-- `scripts/merge-json.js` - Merges JSON key-by-key (user wins)
-- `scripts/verify.js` - Runs repo's check commands before/after
-- `scripts/manifest.js` - Writes/reads manifest.json for uninstall
 - `scripts/remove.js` - Uninstalls via manifest
 
 ### Reviews
@@ -76,7 +73,7 @@ Successfully built the Agent Kit repository at `/home/bel/Workspace/agent-set-up
 ### Suspicious Pattern Scan Results
 All vendored skills scanned for: network calls, shell execution, eval/dynamic code, credential access, writes outside project, hide-actions/ignore-rules/skip-confirmation text.
 
-**Results**: NO suspicious patterns found in any vendored skill. All are pure process/guidance documents with no executable code.
+**Results**: No network, credential, or write-outside-repo patterns found. The vendored set is mostly process/guidance markdown, but it is NOT all non-executable: `systematic-debugging/find-polluter.sh` (shell), `systematic-debugging/condition-based-waiting-example.ts` (TypeScript), and `claude-code-security-review/prompts.py` (Python) are included as files. They are copied as data and never run by the kit.
 
 ---
 
@@ -85,32 +82,32 @@ All vendored skills scanned for: network calls, shell execution, eval/dynamic co
 | Item | Reason |
 |------|--------|
 | Codex hook event names | Verified from official docs (developers.openai.com/codex/hooks) |
-| OpenCode hooks.yaml events | Verified from KristjanPikhof/OpenCode-Hooks reference |
+| OpenCode hook integration | FIXED: the hooks.yaml reference was wrong. Verified plugin `tool.execute.before` + `permission` block against the real CLI. Registration in `opencode.json` `plugin` is required; directory auto-discovery did not load in 1.18.35 |
 | kilo plugin hook events | Based on packages/plugin/src/index.ts in Kilo-Org/kilocode - **UNVERIFIED** for exact event payloads |
 | Cline hook events | Verified from cline/cline .clinerules/hooks/README.md |
 | claude-mem install commands for Codex/OpenCode/kilo/cline | Not documented in project README - **UNVERIFIED** |
 | Caveman install commands for kilo/cline | Not documented in project README - **UNVERIFIED** |
 | Ponytail install commands for kilo/cline | Not documented in project README - **UNVERIFIED** |
 | MCP server exact CLI args | Based on npm package docs - **UNVERIFIED** for all harnesses |
-| Hook filename format for format-on-edit/done-gate | apply.js uses snake_case but kit uses kebab-case - **BUG** |
+| Hook filename format for format-on-edit/done-gate | FIXED: config keys and filenames are now both kebab-case (guard, format-on-edit, done-gate, session-start) |
 
 ---
 
 ## (d) Manual Steps Required
 
-1. **Harness selection**: Edit `kit.config.yaml` to set your harness (`codex`, `opencode`, `kilo`, `cline`, `cursor`, `gemini`, `generic`) and OS (`linux`, `macos`, `windows`)
+1. **Harness selection**: Edit `kit.config.json` to set your harness (`codex`, `opencode`, `kilo`, `cline`, `cursor`, `gemini`, `generic`) and OS (`linux`, `macos`, `windows`)
 
-2. **Enable features**: In `kit.config.yaml`, set desired profiles, mcp, plugins, hooks to `true`
+2. **Enable features**: In `kit.config.json`, set desired profiles, mcp, plugins, hooks to `true`
 
 3. **Apply to target repo**:
    ```bash
    git clone <this-kit> ~/agent-kit
    cd ~/agent-kit
-   # Edit kit.config.yaml
+   # Edit kit.config.json
    node scripts/recon.js --target /path/to/target/repo --output /tmp/recon.json
-   node scripts/propose.js --recon /tmp/recon.json --config kit.config.yaml --output /tmp/proposal.md
-   # Review /tmp/proposal.md
-   node scripts/apply.js --target /path/to/target/repo --proposal /tmp/proposal.json --kit-root ~/agent-kit
+   node scripts/propose.js --recon /tmp/recon.json --config kit.config.json --output /tmp/proposal.json
+   # Review /tmp/proposal.json
+   node scripts/apply.js --target /path/to/target/repo --proposal /tmp/proposal.json
    ```
 
 4. **Enable hooks in harness** (if not auto-detected):
@@ -131,7 +128,7 @@ All vendored skills scanned for: network calls, shell execution, eval/dynamic co
 
 3. **Monorepo per-package apply**: Not fully implemented - apply runs once at root.
 
-4. **Hook filename mismatch**: apply.js copies hooks as `format_on_edit.js` but source is `format-on-edit.js`. Needs fix.
+4. **Hook filename mismatch**: FIXED (see section above). Hook naming is consistent across config, propose, and apply.
 
 5. **Manifest git commit hash**: Returns "unknown" when kit repo not initialized as git repo.
 
@@ -147,7 +144,7 @@ All vendored skills scanned for: network calls, shell execution, eval/dynamic co
 
 ---
 
-## Test Verification
+## Test Verification (pre-fix build, historical)
 
 **Test Project**: `/tmp/test-repo` (Node.js, npm, prettier, simple test)
 
@@ -171,3 +168,25 @@ All vendored skills scanned for: network calls, shell execution, eval/dynamic co
 2. Commit and push the kit to your repository
 3. Clone into temp folder next to target codebase
 4. Run apply procedure as documented in APPLY.md
+
+---
+
+## Fix pass status
+
+The original build was superseded. Current state:
+
+- **Scripts**: `recon`, `propose`, `apply`, `remove`, `lib`. `verify.js`, `merge-json.js`,
+  `merge-agents-md.js`, and `manifest.js` were removed; nothing referenced them.
+- **Config**: `kit.config.yaml` replaced by `kit.config.json`, so the zero-dependency
+  claim is true. No `js-yaml`.
+- **Apply**: preflight validation, backups of every pre-existing file, manifest written
+  before the first change, automatic rollback on failure, idempotent re-apply.
+- **Remove**: restores from backups, deletes only manifest-listed paths, refuses if a
+  kit-written file changed since apply, leaves unrecorded user files alone.
+- **Guard**: OpenCode plugin plus a harness-enforced `permission` block. Replaces the old
+  `hooks/guard.js`, which read stdin while the adapter passed argv and so failed open.
+- **Verified**: apply/re-apply/remove round trip restores a fixture repo byte for byte;
+  dirty tree, invalid JSON, and existing-file cases are refused; rollback leaves no debris;
+  the installed guard blocks `rm -rf .` in a live `opencode run` while a safe `rm` still runs.
+- **Not verified**: other harnesses (adapters only), end-of-turn blocking (no harness
+  supports it; use CI), and shell constructs the parser does not recognise.

@@ -8,6 +8,15 @@
 - Project: `.codex/hooks.json` or `.codex/config.toml` (with `[hooks]` table)
 - User: `~/.codex/hooks.json` or `~/.codex/config.toml`
 
+## Input / blocking contract (verified from docs)
+- One JSON object on **stdin**. Tool name is `tool_name` (`Bash`, `Write`, `Edit`, ...).
+  Tool args are under `tool_input` (e.g. `tool_input.command`).
+- Block a tool by exiting **2** with the reason on stderr, or by printing
+  `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}`.
+- `Stop` cannot reject a turn: it makes Codex **continue**, using the reason as a
+  new prompt. So the done-gate must be CI / pre-commit, not a `Stop` hook.
+- Non-managed hooks must be reviewed and trusted (`/hooks`) before they run.
+
 ## Hook Events (Verified)
 | Event | Description |
 |-------|-------------|

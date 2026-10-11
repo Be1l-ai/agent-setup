@@ -1,227 +1,350 @@
 #!/usr/bin/env node
 /**
- * Apply Script - Main orchestration for applying the kit to a target repo
- * Usage: node apply.js --target <path> --proposal <path> --kit-root <path> [--dry-run]
+ * Apply: installs the kit into a target repo from a proposal.json.
+ *
+ * Usage: node apply.js --target <repo> --proposal <proposal.json> [--dry-run]
+ *                      [--overwrite] [--allow-dirty]
+ *
+ * Guarantees:
+ *  - Preflight validates everything before the first write.
+ *  - Every pre-existing file is backed up into <target>/.agent-kit/backup/ first.
+ *  - Manifest <target>/.agent-kit/manifest.json is written before changes and
+ *    updated after each write, so remove.js can always revert.
+ *  - Any failure mid-apply rolls back. Re-applying the same proposal is a no-op.
  */
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const lib = require('./lib');
 
-const args = process.argv.slice(2);
-const dryRun = args.includes('--dry-run');
-const targetIdx = args.indexOf('--target');
-const proposalIdx = args.indexOf('--proposal');
-const kitRootIdx = args.indexOf('--kit-root');
-const target = targetIdx >= 0 ? args[targetIdx + 1] : process.cwd();
-const proposalPath = proposalIdx >= 0 ? args[proposalIdx + 1] : null;
-const kitRoot = kitRootIdx >= 0 ? args[kitRootIdx + 1] : path.join(__dirname, '..');
+const args = lib.parseArgs(process.argv.slice(2), ['dry-run', 'overwrite', 'allow-dirty']);
+const dryRun = !!args['dry-run'];
+const overwrite = !!args.overwrite;
+const allowDirty = !!args['allow-dirty'];
+const target = path.resolve(args.target || process.cwd());
+const proposalPath = args.proposal;
 
-function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return null;
+const AGENT_DIR = path.join(target, '.agent-kit');
+const MANIFEST = path.join(AGENT_DIR, 'manifest.json');
+const BACKUP_ROOT = '.agent-kit/backup';
+const START = '<!-- agent-kit:start -->';
+const END = '<!-- agent-kit:end -->';
+const CMDS_START = '<!-- agent-kit:commands:start -->';
+const CMDS_END = '<!-- agent-kit:commands:end -->';
+
+function die(msg) {
+  console.error(`[apply] ERROR: ${msg}`);
+  process.exit(1);
+}
+const log = msg => console.log(`[apply] ${msg}`);
+
+// ---------- preflight (no writes) ----------
+
+if (!proposalPath) die('--proposal <proposal.json> is required');
+const proposal = lib.readJson(proposalPath);
+if (!proposal || proposal.version !== 1 || !proposal.hash) die(`proposal missing or invalid: ${proposalPath}`);
+if (!fs.existsSync(target)) die(`target does not exist: ${target}`);
+if (path.resolve(proposal.target) !== target) die(`proposal was generated for ${proposal.target}, not ${target}`);
+
+// Verify the proposal was not edited after generation (hash covers the body only).
+{
+  const { hash, generatedAt, ...body } = proposal;
+  if (lib.sha256(Buffer.from(JSON.stringify(body))) !== hash) {
+    die('proposal hash does not match its contents. Regenerate it with propose.js.');
   }
 }
 
-function writeFile(file, content) {
-  if (dryRun) {
-    console.log(`[apply] DRY RUN: Would write ${file}`);
-    return;
-  }
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const data = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
-  fs.writeFileSync(file, data);
-  console.log(`[apply] Wrote ${file}`);
+const templatePath = path.join(lib.KIT_ROOT, 'AGENTS.template.md');
+if (!fs.existsSync(templatePath)) die('AGENTS.template.md missing from kit');
+const template = fs.readFileSync(templatePath, 'utf8');
+if (template.split(START).length !== 2 || template.split(END).length !== 2) {
+  die('AGENTS.template.md must contain exactly one agent-kit start and end marker');
+}
+let kitBlock = template.slice(template.indexOf(START), template.indexOf(END) + END.length);
+
+// Fill the commands block with what recon detected.
+const detected = proposal.detectedCommands || {};
+const cmdLines = Object.keys(detected).length
+  ? Object.entries(detected).map(([k, v]) => `- ${k}: \`${v}\``).join('\n')
+  : '_No standard commands detected. Ask the user how to build, test, and lint._';
+const cs = kitBlock.indexOf(CMDS_START);
+const ce = kitBlock.indexOf(CMDS_END);
+if (cs !== -1 && ce !== -1 && ce > cs) {
+  kitBlock = kitBlock.slice(0, cs + CMDS_START.length) + '\n' + cmdLines + '\n' + kitBlock.slice(ce);
 }
 
-function copyFile(src, dest) {
-  if (dryRun) {
-    console.log(`[apply] DRY RUN: Would copy ${src} -> ${dest}`);
-    return;
+// Already applied with this proposal => no-op. Different proposal => must remove first.
+const existing = lib.readJson(MANIFEST);
+if (existing) {
+  if (existing.proposalHash === proposal.hash) {
+    log('Already applied with this proposal. Nothing to do.');
+    process.exit(0);
   }
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(src, dest);
-  console.log(`[apply] Copied ${dest}`);
+  die('kit already applied with a different proposal. Run remove.js first.');
 }
 
-function copyDir(src, dest) {
-  if (dryRun) {
-    console.log(`[apply] DRY RUN: Would copy dir ${src} -> ${dest}`);
-    return;
+// Clean tree check.
+let status = null;
+try {
+  status = execFileSync('git', ['status', '--porcelain'], { cwd: target, encoding: 'utf8' })
+    .split('\n').filter(Boolean);
+} catch {
+  status = null;
+}
+if (status === null && !allowDirty) die('target is not a git repo. Use --allow-dirty to proceed without a clean-tree check.');
+if (status && status.length && !allowDirty) {
+  die(`target working tree is not clean (${status.length} changes). Commit or stash first, or use --allow-dirty.`);
+}
+
+// Build the write plan. Each entry: { path, source?, kind }.
+// kind: 'marker' (AGENTS.md block), 'json-merge' (opencode.json / .mcp.json), 'file' (copy/generate), 'dir' (skill folders).
+const plan = [];
+const seen = new Set();
+function addPlan(rel, kind, extra = {}) {
+  if (seen.has(rel)) return;
+  seen.add(rel);
+  const abs = path.join(target, rel);
+  const exists = fs.existsSync(abs);
+  if (exists && kind === 'file' && !overwrite) {
+    die(`${rel} already exists. Use --overwrite to back it up and replace it.`);
   }
-  fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      copyDir(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
+  if (exists && kind === 'file' && fs.statSync(abs).isDirectory()) {
+    die(`${rel} exists and is a directory. Refusing to replace it.`);
+  }
+  plan.push({ path: rel, kind, existed: exists, ...extra });
+}
+
+for (const f of proposal.files) {
+  if (f.action === 'create-dir') {
+    // Skill folders: check every file the skill will write.
+    const srcDir = path.join(lib.KIT_ROOT, f.source);
+    if (!fs.existsSync(srcDir)) die(`skill source missing: ${f.source}`);
+    for (const rel of lib.listFiles(srcDir)) {
+      addPlan(`${f.path}/${rel}`, 'file', { source: path.join(srcDir, rel) });
     }
+    continue;
   }
-  console.log(`[apply] Copied dir ${dest}`);
+  if (f.action === 'merge' && f.path === 'AGENTS.md') {
+    addPlan('AGENTS.md', 'marker');
+    continue;
+  }
+  if (f.action === 'merge') {
+    addPlan(f.path, 'json-merge');
+    continue;
+  }
+  if (f.source) {
+    const src = path.join(lib.KIT_ROOT, f.source);
+    if (!fs.existsSync(src)) die(`kit file missing: ${f.source}`);
+    addPlan(f.path, 'file', { source: src });
+    continue;
+  }
+  addPlan(f.path, 'file', { generated: true });
+}
+for (const rel of ['.agent-kit/config.json', '.agent-kit/format-config.json', '.agent-kit/verify-config.json', '.agent-kit/.gitignore']) {
+  addPlan(rel, 'file', { generated: true });
 }
 
-function run(cmd, cwd = target) {
-  if (dryRun) {
-    console.log(`[apply] DRY RUN: Would run: ${cmd}`);
-    return { success: true };
+// AGENTS.md validation.
+let agentsExisting = null;
+if (fs.existsSync(path.join(target, 'AGENTS.md'))) {
+  agentsExisting = fs.readFileSync(path.join(target, 'AGENTS.md'), 'utf8');
+  const starts = agentsExisting.split(START).length - 1;
+  const ends = agentsExisting.split(END).length - 1;
+  if (starts !== ends || starts > 1) die('AGENTS.md has unbalanced or duplicate agent-kit markers. Fix by hand first.');
+  if (starts === 1 && agentsExisting.indexOf(END) < agentsExisting.indexOf(START)) {
+    die('AGENTS.md has END before START. Fix by hand first.');
   }
+}
+
+// JSON merge targets must parse. Never replace an unparseable config.
+const jsonMerges = {};
+for (const p of plan.filter(x => x.kind === 'json-merge')) {
+  const abs = path.join(target, p.path);
+  if (!fs.existsSync(abs)) {
+    jsonMerges[p.path] = {};
+    continue;
+  }
+  const parsed = lib.readJson(abs);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    die(`${p.path} exists but is not a valid JSON object. Refusing to replace it.`);
+  }
+  jsonMerges[p.path] = parsed;
+}
+
+// Hook/plugin sources must exist (guard plugin only, others are standalone).
+for (const p of plan) {
+  if (p.kind === 'file' && p.path.startsWith('.opencode/plugins/') && !p.source) die(`plugin source missing for ${p.path}`);
+}
+
+// Directories the kit will create (recorded so rollback/remove can clean up).
+const createdDirs = [];
+for (const p of plan) {
+  let d = path.dirname(p.path);
+  while (d && d !== '.' && !fs.existsSync(path.join(target, d))) {
+    if (!createdDirs.includes(d)) createdDirs.push(d);
+    d = path.dirname(d);
+  }
+}
+if (!fs.existsSync(AGENT_DIR) && !createdDirs.includes('.agent-kit')) createdDirs.push('.agent-kit');
+
+log(`Target: ${target}`);
+log(`Harness: ${proposal.harness}; skills=${proposal.skills.length}; hooks=${proposal.hooks.join(',') || 'none'}; mcp=${proposal.mcpServers.join(',') || 'none'}`);
+for (const p of plan) {
+  const tag = p.kind === 'marker' ? 'merge  ' : p.kind === 'json-merge' ? 'merge  ' : (p.existed ? 'replace' : 'create ');
+  log(`  ${tag} ${p.path}${p.existed && p.kind === 'file' ? '  (backup first)' : ''}`);
+}
+if (proposal.permission || (proposal.plugins && proposal.plugins.length)) log('  merge   opencode.json (permission + plugin registration)');
+
+if (dryRun) {
+  log('DRY RUN: no changes made.');
+  process.exit(0);
+}
+
+// ---------- apply ----------
+
+const manifest = {
+  version: 1,
+  kitCommit: lib.kitCommit(),
+  proposalHash: proposal.hash,
+  timestamp: new Date().toISOString(),
+  target,
+  harness: proposal.harness,
+  skills: proposal.skills,
+  hooks: proposal.hooks,
+  mcpServers: proposal.mcpServers,
+  pluginsRegistered: proposal.plugins || [],
+  createdDirs,
+  entries: [], // { path, existed, backup, beforeHash, afterHash }
+};
+
+function writeManifest() {
+  fs.mkdirSync(AGENT_DIR, { recursive: true });
+  const tmp = MANIFEST + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2));
+  fs.renameSync(tmp, MANIFEST);
+}
+
+function rollback(reason) {
+  console.error(`[apply] FAILED: ${reason}. Rolling back.`);
   try {
-    execSync(cmd, { cwd, stdio: 'inherit', shell: true });
-    return { success: true };
+    lib.restoreEntries(target, manifest);
+    fs.rmSync(MANIFEST, { force: true });
+    fs.rmSync(path.join(target, BACKUP_ROOT), { recursive: true, force: true });
+    for (const d of [...createdDirs].sort((a, b) => b.length - a.length)) {
+      try { fs.rmdirSync(path.join(target, d)); } catch {}
+    }
+    console.error('[apply] Rollback complete.');
   } catch (e) {
-    return { success: false, error: e.message };
+    console.error(`[apply] Rollback incomplete: ${e.message}. Run remove.js --target ${target}`);
   }
+  process.exit(1);
 }
 
-function loadProposal() {
-  if (!proposalPath) {
-    console.error('[apply] --proposal required');
-    process.exit(1);
+// Record a file in the manifest and back up its original content first.
+function recordBefore(rel) {
+  const abs = path.join(target, rel);
+  const existed = fs.existsSync(abs);
+  const entry = { path: rel, existed, backup: null, beforeHash: null, afterHash: null };
+  if (existed) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupRel = path.posix.join(BACKUP_ROOT, stamp, rel);
+    fs.mkdirSync(path.dirname(path.join(target, backupRel)), { recursive: true });
+    fs.copyFileSync(abs, path.join(target, backupRel));
+    entry.backup = backupRel;
+    entry.beforeHash = lib.hashPath(abs);
   }
-  const proposal = readJson(proposalPath);
-  if (!proposal) {
-    console.error('[apply] Failed to read proposal');
-    process.exit(1);
-  }
-  return proposal;
+  manifest.entries.push(entry);
+  writeManifest(); // intent recorded before the write
+  return entry;
 }
 
-function applyAGENTS(proposal) {
-  const templatePath = path.join(kitRoot, 'AGENTS.template.md');
-  const template = fs.readFileSync(templatePath, 'utf8');
-  const START = '<!-- agent-kit:start -->';
-  const END = '<!-- agent-kit:end -->';
-  const startIdx = template.indexOf(START);
-  const endIdx = template.indexOf(END);
-  const kitContent = template.slice(startIdx, endIdx + END.length);
-
-  const agentsPath = path.join(target, 'AGENTS.md');
-  let existing = '';
-  if (fs.existsSync(agentsPath)) {
-    existing = fs.readFileSync(agentsPath, 'utf8');
-  }
-
-  const existingStart = existing.indexOf(START);
-  const existingEnd = existing.indexOf(END);
-
-  let merged;
-  if (existingStart === -1 || existingEnd === -1) {
-    merged = (existing.trim() ? existing.trimEnd() + '\n\n' : '') + kitContent + '\n';
-  } else {
-    merged = existing.slice(0, existingStart) + kitContent + existing.slice(existingEnd + END.length);
-  }
-
-  writeFile(agentsPath, merged);
+function writeRecorded(rel, content) {
+  const entry = recordBefore(rel);
+  const abs = path.join(target, rel);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, content);
+  entry.afterHash = lib.hashPath(abs);
+  writeManifest();
 }
 
-function applySkills(proposal) {
-  const skills = proposal.enabledFeatures?.skills || [];
-  for (const skill of skills) {
-    const srcDir = path.join(kitRoot, 'skills', skill);
-    const destDir = path.join(target, '.agent-kit', 'skills', skill);
-    if (fs.existsSync(srcDir)) {
-      copyDir(srcDir, destDir);
-    }
-  }
-}
+try {
+  writeManifest();
 
-function applyHooks(proposal, harness) {
-  const hooksConfig = proposal.enabledFeatures?.hooks || {};
-  const harnessHooksDir = path.join(target, getHarnessHooksDir(harness));
-
-  for (const [hookName, enabled] of Object.entries(hooksConfig)) {
-    if (!enabled) continue;
-    const hookFile = path.join(kitRoot, 'hooks', `${hookName}.js`);
-    if (fs.existsSync(hookFile)) {
-      copyFile(hookFile, path.join(harnessHooksDir, `${hookName}.js`));
-    }
-  }
-}
-
-function getHarnessHooksDir(harness) {
-  const map = {
-    'codex': '.codex/hooks',
-    'opencode': '.opencode/hooks',
-    'kilo': '.kilocode/hooks',
-    'cline': '.clinerules/hooks',
-    'cursor': '.cursor/hooks',
-    'gemini': '.gemini/hooks',
-  };
-  return map[harness] || '.agent-kit/hooks';
-}
-
-function applyMCP(proposal) {
-  const mcpConfig = proposal.enabledFeatures?.mcp || {};
-  const serversPath = path.join(kitRoot, 'mcp', 'servers.json');
-  const servers = readJson(serversPath);
-
-  const targetMCP = getTargetMCPPath();
-  let existing = readJson(targetMCP) || { mcpServers: {} };
-
-  for (const [serverName, enabled] of Object.entries(mcpConfig)) {
-    if (!enabled) continue;
-    if (servers.servers[serverName]) {
-      existing.mcpServers[serverName] = servers.servers[serverName];
+  for (const p of plan) {
+    if (p.kind === 'marker') {
+      let content;
+      if (agentsExisting === null) {
+        content = kitBlock + '\n';
+      } else if (agentsExisting.indexOf(START) === -1) {
+        content = agentsExisting.trimEnd() + '\n\n' + kitBlock + '\n';
+      } else {
+        const s = agentsExisting.indexOf(START);
+        const e = agentsExisting.indexOf(END) + END.length;
+        content = agentsExisting.slice(0, s) + kitBlock + agentsExisting.slice(e);
+      }
+      writeRecorded(p.path, content);
+    } else if (p.kind === 'json-merge') {
+      const base = jsonMerges[p.path] || {};
+      const next = { ...base };
+      if (p.path === 'opencode.json') {
+        if (proposal.permission) {
+          next.permission = { ...(base.permission || {}), ...proposal.permission };
+        }
+        if (proposal.plugins && proposal.plugins.length) {
+          const existing = Array.isArray(base.plugin) ? base.plugin : [];
+          next.plugin = [...existing, ...proposal.plugins.filter(x => !existing.includes(x))];
+        }
+        if (!next.$schema) next.$schema = 'https://opencode.ai/config.json';
+      }
+      if (p.path === '.mcp.json' && proposal.mcpServers.length) {
+        const catalog = lib.readJson(path.join(lib.KIT_ROOT, 'mcp', 'servers.json'));
+        next.mcpServers = { ...(base.mcpServers || {}) };
+        for (const name of proposal.mcpServers) {
+          const def = { ...catalog.servers[name] };
+          for (const k of lib.MCP_META_KEYS) delete def[k];
+          next.mcpServers[name] = def;
+        }
+      }
+      writeRecorded(p.path, JSON.stringify(next, null, 2) + '\n');
+    } else if (p.source) {
+      writeRecorded(p.path, fs.readFileSync(p.source));
+    } else {
+      // Generated kit config files.
+      const content = generated(p.path);
+      writeRecorded(p.path, content);
     }
   }
 
-  writeFile(targetMCP, existing);
-}
-
-function getTargetMCPPath() {
-  // Try common locations
-  const locations = [
-    '.mcp.json',
-    '.cursor/mcp.json',
-    '.claude/mcp.json',
-    '.vscode/mcp.json',
-    '.kilocode/mcp_settings.json',
-  ];
-  for (const loc of locations) {
-    const full = path.join(target, loc);
-    if (fs.existsSync(full)) return full;
+  log('Applied.');
+  log(`Undo with: node ${path.join(lib.KIT_ROOT, 'scripts', 'remove.js')} --target ${target}`);
+  if (proposal.hooks.includes('done-gate') && !proposal.verifyCommand) {
+    log('WARNING: done-gate needs a verify command. Set one in .agent-kit/verify-config.json.');
   }
-  return path.join(target, '.mcp.json');
-}
-
-function applyConfigFiles(proposal) {
-  // Write kit config for reference
-  const configPath = path.join(target, '.agent-kit', 'config.json');
-  writeFile(configPath, proposal.config || {});
-
-  // Write format/verify configs from recon
-  if (proposal.formatConfig) {
-    writeFile(path.join(target, '.agent-kit', 'format-config.json'), proposal.formatConfig);
+  if (proposal.harness === 'opencode') {
+    log('OpenCode: guard is registered in opencode.json "plugin" and permission rules are merged. Restart OpenCode to load them.');
   }
-  if (proposal.verifyConfig) {
-    writeFile(path.join(target, '.agent-kit', 'verify-config.json'), proposal.verifyConfig);
+} catch (e) {
+  rollback(e.message);
+}
+
+function generated(rel) {
+  switch (rel) {
+    case '.agent-kit/config.json':
+      return JSON.stringify({
+        harness: proposal.harness,
+        os: proposal.os,
+        hooks: Object.fromEntries(lib.HOOK_NAMES.map(h => [h, proposal.hooks.includes(h)])),
+        profiles: proposal.skills,
+        mcp: proposal.mcpServers,
+      }, null, 2) + '\n';
+    case '.agent-kit/format-config.json':
+      return JSON.stringify({ formatters: proposal.formatters }, null, 2) + '\n';
+    case '.agent-kit/verify-config.json':
+      return JSON.stringify({ verifyCommand: proposal.verifyCommand }, null, 2) + '\n';
+    case '.agent-kit/.gitignore':
+      return '*\n';
+    default:
+      throw new Error(`no generator for ${rel}`);
   }
 }
-
-function main() {
-  console.log(`[apply] Target: ${target}`);
-  console.log(`[apply] Kit root: ${kitRoot}`);
-  console.log(`[apply] Dry run: ${dryRun}`);
-
-  const proposal = loadProposal();
-
-  // Apply each component
-  applyAGENTS(proposal);
-  applySkills(proposal);
-  applyHooks(proposal, proposal.config?.harness || 'generic');
-  applyMCP(proposal);
-  applyConfigFiles(proposal);
-
-  // Write manifest
-  const { execSync } = require('child_process');
-  const manifestScript = path.join(kitRoot, 'scripts', 'manifest.js');
-  run(`node "${manifestScript}" write --target "${target}" --kit-root "${kitRoot}" --proposal "${proposalPath}"`);
-
-  console.log('[apply] Done');
-}
-
-main();

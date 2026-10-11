@@ -4,7 +4,7 @@
 - **Official Docs**: https://kilo.ai/docs/automate/extending/plugins
 - **Config Schema**: https://github.com/Kilo-Org/kilocode/blob/main/packages/kilo-docs/pages/contributing/architecture/config-schema.md
 - **Plugin API**: https://github.com/Kilo-Org/kilocode/blob/main/packages/plugin/src/index.ts
-- **Verified**: 2026-10-09
+- **Verified**: 2026-10-09 (UNVERIFIED: no file-based command-hook contract found in docs; kilo appears to use permissions + plugins)
 
 ## Config Location
 - Project: `kilo.jsonc` (root) or `.kilo/kilo.jsonc`

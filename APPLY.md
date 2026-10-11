@@ -36,16 +36,16 @@ The recon script detects:
 
 ## Step 2: Proposal
 
-Generate the proposal from the recon report and `kit.config.yaml`:
+Generate the proposal from the recon report and `kit.config.json`:
 
 ```bash
-node scripts/propose.js --recon /tmp/recon-report.json --config kit.config.yaml --output /tmp/proposal.md
+node scripts/propose.js --recon /tmp/recon-report.json --config kit.config.json --output /tmp/proposal.json
 ```
 
-The proposal (`.agent-kit/PROPOSAL.md`) lists:
+The proposal (`/tmp/proposal.json`, with a summary printed to stdout) lists:
 - Every file the kit will **create**
 - Every file the kit will **modify** (with the exact marker-block merge strategy)
-- Every skill/MCP/hook/plugin that will be **enabled** (based on detected stack + kit.config.yaml)
+- Every skill/MCP/hook that will be **enabled** (from kit.config.json)
 - Any **UNVERIFIED** items (harness adapters not verified, missing commands, etc.)
 
 **STOP and wait for user approval.** Make no changes before explicit approval.
@@ -57,11 +57,11 @@ The proposal (`.agent-kit/PROPOSAL.md`) lists:
 Apply the approved proposal:
 
 ```bash
-node scripts/apply.js --target /path/to/target/repo --proposal /tmp/proposal.md --kit-root ~/agent-kit
+node scripts/apply.js --target /path/to/target/repo --proposal /tmp/proposal.json
 ```
 
 Apply rules:
-- **Never overwrite or reformat** existing user files
+- **Never overwrite** existing files: apply refuses to touch a file it would replace unless you pass `--overwrite`, which backs the original up first
 - **Merge into AGENTS.md/CLAUDE.md only between marker comments**:
   ```html
   <!-- agent-kit:start -->
@@ -72,7 +72,9 @@ Apply rules:
 - **User repo's conventions win** over kit defaults (indentation, quotes, command names, etc.)
 - **Do not touch user's CI files**; at most print a suggested snippet to stdout
 - **Per-package in monorepos**: apply to each package's root, not once at repo root
-- **Idempotent**: running twice produces the same result
+- **Idempotent**: a second run with the same proposal is a no-op
+- **Backups**: every pre-existing file is copied to `.agent-kit/backup/` before it is changed
+- **Rollback**: any failure during apply reverts all changes automatically
 
 ---
 
@@ -82,25 +84,23 @@ Run the repo's own checks **before and after** applying:
 
 ```bash
 # Before (captured during recon)
-node scripts/verify.js --target /path/to/target/repo --phase before --commands "<from-recon>"
+cd /path/to/target/repo && <verifyCommand from proposal.json>
 
 # After
-node scripts/verify.js --target /path/to/target/repo --phase after --commands "<from-recon>"
+cd /path/to/target/repo && <verifyCommand from proposal.json>
 ```
 
-If "after" is worse than "before" (new failures, new warnings), **revert all changes** and report.
+If "after" fails where "before" passed, **revert** with `node scripts/remove.js --target /path/to/target/repo` and report.
 
 ---
 
 ## Step 5: Manifest
 
-Write `.agent-kit/manifest.json` listing:
-- Every file **created** (with hash)
-- Every file **modified** (with before-hash and after-hash)
-- Kit commit hash (`git rev-parse HEAD` from kit repo)
-- Kit version (from `package.json` or `kit.config.yaml`)
-- Timestamp
-- Enabled features (skills, MCPs, hooks, plugins)
+Apply writes `.agent-kit/manifest.json` **before** the first change and updates it after each write. It records:
+- Every file the kit wrote, whether it existed before, and its backup path
+- Hash of each file after apply (remove.js uses it to detect edits)
+- Kit commit hash, proposal hash, timestamp
+- Enabled skills, hooks, MCP servers
 
 This enables exact uninstall via `REMOVE.md`.
 
@@ -125,3 +125,4 @@ Print a summary to the user:
 5. Verify runs before AND after; revert on regression
 6. Manifest written for every apply
 7. All scripts: zero dependencies, Node 18+, idempotent, `--dry-run` flag
+8. Apply refuses a dirty target (override: `--allow-dirty`) and refuses to overwrite existing kit targets (override: `--overwrite`, which backs them up)

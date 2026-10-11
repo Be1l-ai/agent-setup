@@ -1,117 +1,76 @@
 # Harness Adapter: OpenCode
 
-## Source
-- **Official Docs**: https://opencode.ai/docs/config/
-- **Hooks Reference**: https://github.com/KristjanPikhof/OpenCode-Hooks/blob/HEAD/docs/hooks-v2-reference.md
-- **Verified**: 2026-10-09
+Verified against **opencode 1.18.35** on Linux by running the CLI. Anything not
+verified here is marked UNVERIFIED.
 
-## Config Location
-- Project: `.opencode/hook/hooks.yaml` (via `opencode-yaml-hooks` plugin)
-- User: `~/.config/opencode/hook/hooks.yaml`
-- Main config: `opencode.json` or `opencode.jsonc`
+## What OpenCode actually supports
 
-## Hook Events (Verified - hooks.yaml format)
-| Event | Description |
-|-------|-------------|
-| `session.created` | New session created |
-| `session.deleted` | Session deleted |
-| `session.idle` | Session idle |
-| `file.changed` | File modified |
-| `tool.before.*` | Before any tool (wildcard) |
-| `tool.before.<tool>` | Before specific tool |
-| `tool.after.*` | After any tool (wildcard) |
-| `tool.after.<tool>` | After specific tool |
-| `message.updated` | Message updated |
-| `message.part.updated` | Message part updated |
+- **Config**: JSON or JSONC, merged across locations (global, `OPENCODE_CONFIG`,
+  project `opencode.json`, `.opencode/` dirs). Later locations override earlier keys.
+- **Plugins**: JS/TS modules loaded from `.opencode/plugins/` or
+  `~/.config/opencode/plugins/`, or listed in the `plugin` array of `opencode.json`.
+- **Plugin hooks**: `tool.execute.before`, `tool.execute.after`, `event`,
+  `permission.ask`, `shell.env`, and experimental hooks.
+- **Permissions**: `allow` / `ask` / `deny` per tool, with per-command patterns for `bash`.
 
-## New Native Hook System (PR #11525 - PascalCase)
-| Event | Description |
-|-------|-------------|
-| `SessionStart` | Session initialized |
-| `SessionStop` | Session completes |
-| `PreToolUse` | Before tool execution |
-| `PostToolUse` | After successful tool execution |
-| `PostToolUseFailure` | After tool execution fails |
-| `UserPromptSubmit` | User submits prompt |
-| `Stop` | Automation loop ends |
-| `PermissionRequest` | Before permission dialogs |
-| `SubagentStart` | Subagent starts |
-| `SubagentStop` | Subagent stops |
-| `PreCompact` | Before context compaction |
-| `Notification` | Custom notifications |
+## Guard: plugin + permission block
 
-## Config Format (hooks.yaml)
-```yaml
-hooks:
-  - id: guard-hook
-    event: tool.before.bash
-    action: stop
-    conditions:
-      - matchesAnyPath: "**"
-    actions:
-      - bash: "node $(git rev-parse --show-toplevel)/.opencode/hooks/guard.js bash ${tool_input.command}"
+The kit uses both layers, and this is deliberate.
 
-  - id: format-hook
-    event: tool.after.write
-    conditions:
-      - matchesCodeFiles
-    actions:
-      - bash: "node $(git rev-parse --show-toplevel)/.opencode/hooks/format-on-edit.js write ${tool_input.file_path}"
+**1. `permission` block** (in `opencode.json`) — hard denies enforced by the harness
+before the tool runs. The agent cannot bypass these with shell tricks.
 
-  - id: done-gate-hook
-    event: session.idle
-    scope: main
-    conditions:
-      - matchesAllPaths:
-          - package.json
-    actions:
-      - bash: "node $(git rev-parse --show-toplevel)/.opencode/hooks/done-gate.js"
-
-  - id: session-start-hook
-    event: session.created
-    actions:
-      - bash: "node $(git rev-parse --show-toplevel)/.opencode/hooks/session-start.js"
-```
-
-## Native Config Format (opencode.jsonc - PascalCase)
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "hooks": {
-    "PreToolUse": [
-      { "name": "guard", "path": "~/.opencode/hooks/guard.js", "enabled": true }
-    ],
-    "PostToolUse": [
-      { "name": "format", "path": "~/.opencode/hooks/format-on-edit.js", "enabled": true }
-    ],
-    "Stop": [
-      { "name": "verify", "path": "~/.opencode/hooks/done-gate.js", "enabled": true }
-    ],
-    "SessionStart": [
-      { "name": "init", "path": "~/.opencode/hooks/session-start.js", "enabled": true }
-    ]
-  }
+```json
+"permission": {
+  "bash": { "*": "allow", "rm -rf *": "deny", "git push * --force*": "deny" },
+  "read": { "*": "allow", "*.env": "deny", "*.pem": "deny" }
 }
 ```
 
-## Input/Output
-- **hooks.yaml**: Hook receives event data, runs `bash`/`command`/`tool` actions
-- **Native (opencode.jsonc)**: Hook scripts receive JSON on stdin, run in isolated Bun subprocesses
-- **Blocking**: `action: stop` on `tool.before.*` hooks blocks execution
+Last matching rule wins, so put `"*"` first. Verified: `rm victim.txt` under
+`"rm *": "deny"` was blocked and the file survived.
 
-## Agent Kit Mapping
-| Kit Hook | hooks.yaml Event | Native Event |
-|----------|------------------|--------------|
-| guard | `tool.before.bash` | `PreToolUse` |
-| format-on-edit | `tool.after.write` | `PostToolUse` |
-| done-gate | `session.idle` (scope: main) | `Stop` |
-| session-start | `session.created` | `SessionStart` |
+**2. Guard plugin** — everything the pattern layer cannot express (flag parsing,
+`sh -c`, `sudo`, `$(...)`, `+refspec`, protected paths).
 
-## Notes
-- hooks.yaml requires `opencode-yaml-hooks` plugin in `opencode.json`
-- Native hooks (PascalCase) are newer, non-blocking by default
-- Each hook runs in sandboxed process with timeout (default 5s)
-- Conditions: `matchesCodeFiles`, `matchesAnyPath`, `matchesAllPaths`
-- Scope: `all` (default), `main`, `child`
-- RunIn: `current` (default), `main`
-- Async: `true` for fire-and-forget (bash only, not on tool.before)
+Installed to `.opencode/plugins/agent-kit-guard.mjs` with the shared logic in
+`agent-kit-guard-core.mjs`, and **registered in `opencode.json`**:
+
+```json
+"plugin": ["./.opencode/plugins/agent-kit-guard.mjs"]
+```
+
+> Registration is required. Auto-discovery of `.opencode/plugins/` did **not** load
+> plugins in 1.18.35 during testing; an explicit `plugin` entry did. Do not drop it.
+
+Throwing inside `tool.execute.before` blocks the call. Verified: `rm -rf canary.txt .`
+returned `AGENT-KIT GUARD BLOCKED: rm of whole repo blocked: .` and the file survived.
+
+Plugin signature:
+
+```js
+"tool.execute.before": async (input, output) => {
+  input.tool;      // "bash" | "read" | "write" | "edit" | ...
+  output.args;     // { command } | { filePath } | ...
+}
+```
+
+Tool names are OpenCode's, not generic: the file tools use `filePath` (camelCase),
+not `file_path`. The core accepts either.
+
+## Known limits
+
+- The guard parses shell text heuristically. Anything it cannot parse
+  (`python -c`, `osascript`, a custom binary) is not checked. It is a guardrail
+  against accidents, not a sandbox.
+- The `permission` block is the reliable layer. Prefer adding a rule there for
+  anything that must never run.
+- Guard rules for the user's own files (e.g. `.agent-kit/`) are enforced by the
+  plugin. An agent that edits the plugin can disable the plugin. Protect it with
+  a `permission` deny on `bash` for `*agent-kit-guard*` if that matters to you.
+
+## done-gate
+
+OpenCode has no hook that can block the agent from finishing a turn. `session.idle`
+fires after the turn ends. The kit ships `hooks/done-gate.js` as a standalone
+script; run it from CI or a pre-commit hook, not as a lifecycle hook.

@@ -6,21 +6,15 @@ This file guides how an AI agent should work in this repository.
 ## Repository Commands
 
 <!-- agent-kit:commands:start -->
-# Detect at apply time from package.json, Makefile, pyproject.toml, etc.
-# Example:
-# test: npm test
-# lint: npm run lint
-# format: npm run format
-# typecheck: npm run typecheck
-# build: npm run build
+(apply fills this in from the repo's package.json / Makefile / pyproject.toml)
 <!-- agent-kit:commands:end -->
 
 ## Core Rules
 
 1. **Run the repo's check command before saying done** — Use the commands above. If they fail, fix them.
 2. **Ask before publish/deploy/migrations/deleting data** — Get explicit approval for any destructive or external action.
-3. **Never read .env, .pem, .key, or credential files** — These are blocked by the guard hook.
-4. **Use the repo's own formatter/linter** — The format-on-edit hook runs it automatically.
+3. **Never read .env, .pem, .key, or credential files** — Blocked by the OpenCode permission config and the guard plugin. Still: do not try to route around it.
+4. **Use the repo's own formatter/linter** — `node .agent-kit/format-on-edit.js` runs it on a file if you invoke it; it is not auto-registered.
 
 ## Skill Selection
 
@@ -28,12 +22,12 @@ Read the skill folder when doing the corresponding task:
 
 | Task | Skill Folder |
 |------|--------------|
-| Systematic debugging | `skills/systematic-debugging/` |
-| Test-driven development | `skills/test-driven-development/` |
-| Receiving code review | `skills/receiving-code-review/` |
-| Finishing a development branch | `skills/finishing-a-development-branch/` |
-| Security code review | `skills/claude-code-security-review/` |
-| Frontend design (UI repos only) | `skills/frontend-design/` |
+| Systematic debugging | `.agent-kit/skills/systematic-debugging/` |
+| Test-driven development | `.agent-kit/skills/test-driven-development/` |
+| Receiving code review | `.agent-kit/skills/receiving-code-review/` |
+| Finishing a development branch | `.agent-kit/skills/finishing-a-development-branch/` |
+| Security code review | `.agent-kit/skills/claude-code-security-review/` |
+| Frontend design (UI repos only) | `.agent-kit/skills/frontend-design/` |
 
 ## Tool Name Mapping
 

@@ -3,7 +3,7 @@
 ## Source
 - **Official Docs**: https://docs.cline.bot/customization/hooks
 - **Repo**: https://github.com/cline/cline/blob/main/.clinerules/hooks/README.md
-- **Verified**: 2026-10-09
+- **Verified**: 2026-10-09 (paths below are UNVERIFIED; current docs point to SDK plugins, not command hooks)
 
 ## Config Location
 - Project: `.clinerules/hooks/` (workspace) - can be committed
