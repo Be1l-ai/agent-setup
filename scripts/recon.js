@@ -65,7 +65,10 @@ function detectPackageManager() {
   if (exists(path.join(target, 'Cargo.lock'))) return 'cargo';
   if (exists(path.join(target, 'go.mod'))) return 'go';
   if (exists(path.join(target, 'Makefile'))) return 'make';
-  return 'unknown';
+  // No lockfile. npm ships with Node and "npm run <script>" works regardless
+  // of which package manager the repo actually uses, so fall back to it rather
+  // than emitting an unrunnable "unknown run <script>".
+  return 'npm';
 }
 
 function detectCommands(pkgManager) {
