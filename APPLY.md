@@ -80,7 +80,23 @@ Apply rules:
 
 ## Step 4: Verify
 
-Run the repo's own checks **before and after** applying:
+The apply script runs the repo's own checks **before and after** applying automatically when `verifyCommand` is configured.
+
+If the verify command is set in the proposal (from `kit.config.json` or detected from recon), apply will:
+1. Run the verify command **before** any writes, storing the result.
+2. Run the verify command **after** all writes.
+3. If "after" fails while "before" passed, **automatically revert** all changes and exit with a non-zero status (regression detected).
+4. Report the before/after verify results in the final output.
+
+The verify command runs from the target repo directory with a default timeout of 60 seconds. If `verifyCommand` is null/undefined (or a recon-derived placeholder like `unknown run ...`), verification is skipped (no-op).
+
+**Outcome rules:**
+- **Regression (before passed, after failed):** Automatic revert of all changes, exit non-zero.
+- **Both before and after fail (or command cannot run):** Not a regression — no revert. Apply exits non-zero and reports a warning that verification did not pass. The kit files remain applied, and both verify results are reported.
+- **Verify passes before and after:** Apply succeeds with "Applied." and exit 0.
+- **No verify command configured:** Quiet no-op, succeeds with "Applied." and exit 0 (no verify messages).
+
+You can still run verification manually if needed:
 
 ```bash
 # Before (captured during recon)
@@ -89,8 +105,6 @@ cd /path/to/target/repo && <verifyCommand from proposal.json>
 # After
 cd /path/to/target/repo && <verifyCommand from proposal.json>
 ```
-
-If "after" fails where "before" passed, **revert** with `node scripts/remove.js --target /path/to/target/repo` and report.
 
 ---
 

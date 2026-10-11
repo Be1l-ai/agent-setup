@@ -235,11 +235,15 @@ export function checkBash(root, command) {
   return null;
 }
 
-// Map an OpenCode tool call onto a check. Tool names: bash, read, write, edit.
+// Map an OpenCode tool call onto a check.
+// Tool name: V1 calls the shell tool "bash"; V2 renamed it to "shell". File
+// tools take "filePath" (V1) or "path" (V2). Accept both shapes so one core
+// works on either runtime.
 export function checkToolCall(root, tool, args = {}) {
   const file = args.filePath ?? args.file_path ?? args.path;
   switch (tool) {
     case "bash":
+    case "shell":
       return checkBash(root, String(args.command ?? ""));
     case "read":
       return checkRead(root, file);
