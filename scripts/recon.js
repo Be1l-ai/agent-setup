@@ -36,8 +36,16 @@ function exists(file) {
 }
 
 function glob(pattern, cwd = target) {
+  // -name compares only basenames, so path-qualified patterns (e.g.
+  // ".github/workflows/*.yml") silently match nothing. Use -path for those:
+  // find prints paths rooted at "./", and -path's "*" matches "/" too, so
+  // ".claude/**" still hits nested files. Basename patterns keep exact -name
+  // semantics (matched at any depth).
+  const matcher = pattern.includes('/')
+    ? `-path "./${pattern}"`
+    : `-name "${pattern}"`;
   try {
-    return run(`find . -path ./node_modules -prune -o -path ./.git -prune -o -name "${pattern}" -print`, cwd)
+    return run(`find . -path ./node_modules -prune -o -path ./.git -prune -o ${matcher} -print`, cwd)
       .split('\n')
       .filter(Boolean)
       .map(p => p.replace(/^\.\//, ''));
