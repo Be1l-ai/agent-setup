@@ -194,12 +194,50 @@ for (const p of plan) {
   const tag = p.kind === 'marker' ? 'merge  ' : p.kind === 'json-merge' ? 'merge  ' : (p.existed ? 'replace' : 'create ');
   log(`  ${tag} ${p.path}${p.existed && p.kind === 'file' ? '  (backup first)' : ''}`);
 }
-if (proposal.permission || (proposal.plugins && proposal.plugins.length)) log('  merge   opencode.json (permission + plugin registration)');
+if (proposal.permission || (proposal.plugins && proposal.plugins.length)) log('  merge   opencode.json (V2 permissions/plugins/skills + V1 permission/plugin)');
 
-if (dryRun) {
-  log('DRY RUN: no changes made.');
-  process.exit(0);
-}
+  // Verification helper
+  function runVerify(label, timeoutMs = 60000) {
+    const verifyCmd = proposal.verifyCommand;
+    if (!verifyCmd) {
+      return { executed: false, label, exitCode: null, output: '' };
+    }
+    log(`${label}...`);
+    try {
+      const output = execFileSync('sh', ['-c', verifyCmd], {
+        cwd: target,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: timeoutMs,
+      });
+      const result = { executed: true, label, exitCode: 0, output: output || '' };
+      log(`${label} passed (exit 0)`);
+      return result;
+    } catch (e) {
+      const result = {
+        executed: true,
+        label,
+        exitCode: e.code !== undefined ? e.code : 1,
+        output: (e.stdout || '') + (e.stderr || '') || e.message || '',
+      };
+      log(`${label} failed (exit ${result.exitCode})`);
+      return result;
+    }
+  }
+
+  let verifyBefore = null;
+  let verifyAfter = null;
+
+  if (dryRun) {
+    log('DRY RUN: no changes made.');
+    if (proposal.verifyCommand) {
+      log('DRY RUN: verify command would run before and after (not executed)');
+    }
+    process.exit(0);
+  }
+
+  // Run verify before any writes
+  verifyBefore = runVerify('Verify before apply');
 
 // ---------- apply ----------
 
@@ -288,12 +326,65 @@ try {
       const base = jsonMerges[p.path] || {};
       const next = { ...base };
       if (p.path === 'opencode.json') {
+        // --- config translation helpers (pure, scoped to this block) ---
+        // V1 identified permission rules by tool name; V2 uses opaque action
+        // strings. Map the keys the kit emits onto their V2 action names.
+        const v2Action = t => (t === 'bash' ? 'shell' : t === 'task' ? 'subagent' : t);
+        // V1 nested object { bash: { pattern: effect } } -> V2 ordered array
+        // [{ action, resource, effect }]. Object key order is preserved, and the
+        // kit lists "*" first, so the V2 "last match wins" rule keeps the same
+        // outcome as V1 (specific rules after the catch-all).
+        const toV2Permissions = perm => {
+          const out = [];
+          for (const tool of Object.keys(perm)) {
+            const rules = perm[tool];
+            if (!rules || typeof rules !== 'object') continue;
+            for (const resource of Object.keys(rules)) {
+              out.push({ action: v2Action(tool), resource, effect: rules[resource] });
+            }
+          }
+          return out;
+        };
+        // V2 rejects a plugin config entry that resolves to a file
+        // ("configured plugin path must be a directory"), so translate the V1
+        // file entry (./x/agent-kit-guard.mjs) to its directory
+        // (./x/agent-kit-guard). The install side must place an index.mjs there.
+        const toV2PluginTarget = entry =>
+          typeof entry === 'string' ? entry.replace(/\.(mjs|cjs|js|ts|tsx|jsx)$/, '') : entry;
+        const appendUnique = (arr, items) => {
+          const seen = new Set(arr.map(x => JSON.stringify(x)));
+          for (const it of items) {
+            const k = JSON.stringify(it);
+            if (!seen.has(k)) { seen.add(k); arr.push(it); }
+          }
+          return arr;
+        };
+
         if (proposal.permission) {
+          // V1 shape: "permission": { bash: {...}, read: {...} }.
           next.permission = { ...(base.permission || {}), ...proposal.permission };
+          // V2 shape: ordered "permissions" array, last match wins.
+          next.permissions = appendUnique(
+            Array.isArray(base.permissions) ? [...base.permissions] : [],
+            toV2Permissions(proposal.permission),
+          );
         }
         if (proposal.plugins && proposal.plugins.length) {
-          const existing = Array.isArray(base.plugin) ? base.plugin : [];
-          next.plugin = [...existing, ...proposal.plugins.filter(x => !existing.includes(x))];
+          // V1 shape: "plugin": ["./.opencode/plugins/agent-kit-guard.mjs"].
+          next.plugin = appendUnique(Array.isArray(base.plugin) ? [...base.plugin] : [], proposal.plugins);
+          // V2 shape: "plugins": ["./.opencode/plugins/agent-kit-guard"] (a directory).
+          next.plugins = appendUnique(
+            Array.isArray(base.plugins) ? [...base.plugins] : [],
+            proposal.plugins.map(toV2PluginTarget),
+          );
+        }
+        // V2 discovers .opencode/skills/ automatically; the kit installs skills
+        // under .agent-kit/, so point the "skills" array at that directory too.
+        if (Array.isArray(proposal.skills) && proposal.skills.length) {
+          next.skills = appendUnique(
+            Array.isArray(base.skills) ? [...base.skills] : [],
+            ['./.agent-kit/skills'],
+          );
         }
         if (!next.$schema) next.$schema = 'https://opencode.ai/config.json';
       }
@@ -316,13 +407,45 @@ try {
     }
   }
 
-  log('Applied.');
+  // Run verify after writes
+  verifyAfter = runVerify('Verify after apply');
+
+  // Check for regression: after failed while before passed
+  if (verifyBefore && verifyBefore.executed && verifyBefore.exitCode === 0 &&
+      verifyAfter && verifyAfter.executed && verifyAfter.exitCode !== 0) {
+    rollback(`Verify failed after apply (before: exit 0, after: exit ${verifyAfter.exitCode}). Regression detected.`);
+    return;
+  }
+
+  // Check verify outcomes
+  const verifyExecuted = verifyBefore && verifyBefore.executed;
+  const verifyOk = verifyExecuted && verifyBefore.exitCode === 0 && verifyAfter && verifyAfter.exitCode === 0;
+
+  if (verifyExecuted && !verifyOk) {
+    log('WARNING: Verify did not pass after apply (see results below).');
+  } else {
+    log('Applied.');
+  }
   log(`Undo with: node ${path.join(lib.KIT_ROOT, 'scripts', 'remove.js')} --target ${target}`);
   if (proposal.hooks.includes('done-gate') && !proposal.verifyCommand) {
     log('WARNING: done-gate needs a verify command. Set one in .agent-kit/verify-config.json.');
   }
   if (proposal.harness === 'opencode') {
-    log('OpenCode: guard is registered in opencode.json "plugin" and permission rules are merged. Restart OpenCode to load them.');
+    log('OpenCode: merged opencode.json — V2 "plugins"/"permissions"/"skills" plus V1 "plugin"/"permission" for compatibility. Restart OpenCode to load them.');
+    if (proposal.plugins && proposal.plugins.length) {
+      log('OpenCode: V2 loads the guard from a plugin directory (.opencode/plugins/agent-kit-guard/index.mjs). If that directory is missing, OpenCode 2.x logs "failed to load plugin"; see harnesses/opencode.md.');
+    }
+  }
+  // Print verify results in final report
+  if (verifyBefore && verifyBefore.executed) {
+    log(`Verify before: exit ${verifyBefore.exitCode}`);
+  }
+  if (verifyAfter && verifyAfter.executed) {
+    log(`Verify after: exit ${verifyAfter.exitCode}`);
+  }
+  // If verify was configured but didn't pass, exit non-zero (config error/misconfiguration, not regression)
+  if (verifyExecuted && !verifyOk) {
+    process.exit(1);
   }
 } catch (e) {
   rollback(e.message);

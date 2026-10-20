@@ -122,11 +122,15 @@ function main() {
   check('dry run makes no changes', kitAttempt(['apply.js', '--target', repo, '--proposal', proposal, '--dry-run']).ok
     && hashTree(repo) === baseline);
   check('apply succeeds', kitAttempt(['apply.js', '--target', repo, '--proposal', proposal]).ok);
-  check('installed the guard plugin', fs.existsSync(path.join(repo, '.opencode', 'plugins', 'agent-kit-guard.mjs')));
-  check('installed the guard core', fs.existsSync(path.join(repo, '.opencode', 'plugins', 'agent-kit-guard-core.mjs')));
+  check('installed the guard plugin (V1 file)', fs.existsSync(path.join(repo, '.opencode', 'plugins', 'agent-kit-guard.mjs')));
+  check('installed the guard core (V1 file)', fs.existsSync(path.join(repo, '.opencode', 'plugins', 'agent-kit-guard-core.mjs')));
+  check('installed the guard plugin directory (V2)', fs.existsSync(path.join(repo, '.opencode', 'plugins', 'agent-kit-guard', 'index.mjs')));
+  check('installed the guard core (V2 dir)', fs.existsSync(path.join(repo, '.opencode', 'plugins', 'agent-kit-guard', 'agent-kit-guard-core.mjs')));
   const oc = JSON.parse(fs.readFileSync(path.join(repo, 'opencode.json'), 'utf8'));
-  check('registered the plugin', oc.plugin.includes('./.opencode/plugins/agent-kit-guard.mjs'));
-  check('merged a permission block', !!oc.permission && !!oc.permission.bash && !!oc.permission.read);
+  check('registered the plugin (V1)', oc.plugin.includes('./.opencode/plugins/agent-kit-guard.mjs'));
+  check('registered the plugin (V2 dir)', Array.isArray(oc.plugins) && oc.plugins.includes('./.opencode/plugins/agent-kit-guard'));
+  check('merged a permission block (V1)', !!oc.permission && !!oc.permission.bash && !!oc.permission.read);
+  check('merged a permissions array (V2)', Array.isArray(oc.permissions) && oc.permissions.length > 0);
   check('kept the user model setting', oc.model === 'x/y');
   check('filled the AGENTS.md commands block',
     /commands:start[\s\S]*test:/.test(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf8')));
@@ -138,6 +142,7 @@ function main() {
 
   console.log('--- remove protects edited files');
   fs.appendFileSync(path.join(repo, '.opencode', 'plugins', 'agent-kit-guard-core.mjs'), '// user edit\n');
+  fs.appendFileSync(path.join(repo, '.opencode', 'plugins', 'agent-kit-guard', 'agent-kit-guard-core.mjs'), '// user edit\n');
   check('refuses to remove edited kit files', !kitAttempt(['remove.js', '--target', repo]).ok);
   check('--ignore-hash forces it', kitAttempt(['remove.js', '--target', repo, '--ignore-hash']).ok);
 
@@ -152,6 +157,7 @@ function main() {
 
   console.log('--- rollback on mid-apply failure');
   fs.mkdirSync(path.join(repo, '.opencode', 'plugins', 'agent-kit-guard-core.mjs'), { recursive: true });
+  fs.mkdirSync(path.join(repo, '.opencode', 'plugins', 'agent-kit-guard', 'agent-kit-guard-core.mjs'), { recursive: true });
   check('failed apply exits non-zero', !kitAttempt(['apply.js', '--target', repo, '--proposal', proposal, '--overwrite']).ok);
   check('rollback removed .agent-kit', !fs.existsSync(path.join(repo, '.agent-kit')));
   const status = run('git', ['status', '--porcelain'], { cwd: repo })
